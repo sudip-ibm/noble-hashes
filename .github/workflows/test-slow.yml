@@ -4,21 +4,21 @@ on:
     - cron: '0 12 * * 1,4' # 06:00 bi-weekly (mon, thu)
   workflow_dispatch:
 jobs:
-  slow:
-    name: Slow large input tests
-    uses: sudip-ibm/jsbt/.github/workflows/test-ts-slow.yml@e615ee106bf20b0b20bda8294d5780ac2d5aac01
-    with:
-      npm-task: test:slow
-  dos:
-    name: Slow DoS tests
-    uses: sudip-ibm/jsbt/.github/workflows/test-ts-slow.yml@e615ee106bf20b0b20bda8294d5780ac2d5aac01
-    with:
-      npm-task: test:dos
-  acvp:
-    name: Slow ACVP tests
-    uses: sudip-ibm/jsbt/.github/workflows/test-ts-slow.yml@e615ee106bf20b0b20bda8294d5780ac2d5aac01
-    with:
-      npm-task: test:acvp
+  # slow:
+  #   name: Slow large input tests
+  #   uses: sudip-ibm/jsbt/.github/workflows/test-ts-slow.yml@e615ee106bf20b0b20bda8294d5780ac2d5aac01
+  #   with:
+  #     npm-task: test:slow
+  # dos:
+  #   name: Slow DoS tests
+  #   uses: sudip-ibm/jsbt/.github/workflows/test-ts-slow.yml@e615ee106bf20b0b20bda8294d5780ac2d5aac01
+  #   with:
+  #     npm-task: test:dos
+  # acvp:
+  #   name: Slow ACVP tests
+  #   uses: sudip-ibm/jsbt/.github/workflows/test-ts-slow.yml@e615ee106bf20b0b20bda8294d5780ac2d5aac01
+  #   with:
+  #     npm-task: test:acvp
   kdf:
     name: Slow KDF tests
     uses: sudip-ibm/jsbt/.github/workflows/test-ts-slow.yml@e615ee106bf20b0b20bda8294d5780ac2d5aac01

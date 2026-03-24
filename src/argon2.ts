@@ -122,16 +122,36 @@ function block(x: Uint32Array, xPos: number, yPos: number, outPos: number, needX
   clean(A2_BUF);
 }
 
+/**
+ * Write a 32-bit unsigned integer into a Uint8Array at the given offset
+ * in little-endian byte order, as required by RFC 9106.
+ *
+ * This replaces the previous pattern of aliasing a Uint32Array with a
+ * Uint8Array view, which produced CPU-native byte order. On little-endian
+ * machines (x86) that happened to match the RFC, but on big-endian machines
+ * (s390x) it produced the wrong byte sequence and therefore a wrong hash.
+ *
+ * Bitwise shifts operate on numeric values, not memory layout, so this
+ * produces identical bytes on every architecture.
+ */
+function writeLE32(dst: Uint8Array, offset: number, val: number) {
+  dst[offset + 0] = (val >>> 0) & 0xff;  // least significant byte always first
+  dst[offset + 1] = (val >>> 8) & 0xff;
+  dst[offset + 2] = (val >>> 16) & 0xff;
+  dst[offset + 3] = (val >>> 24) & 0xff; // most significant byte always last
+}
+
 // Variable-Length Hash Function H'
-function Hp(A: Uint32Array, dkLen: number) {
-  const A8 = u8(A);
-  const T = new Uint32Array(1);
-  const T8 = u8(T);
-  T[0] = dkLen;
+function Hp(A: Uint8Array, dkLen: number) {
+  // FIX: was `new Uint32Array(1)` aliased with a Uint8Array view.
+  // That encoded dkLen in CPU-native byte order, which is wrong on big-endian.
+  // Now we write the 4-byte LE32(dkLen) prefix explicitly and portably.
+  const T8 = new Uint8Array(4);
+  writeLE32(T8, 0, dkLen);
   // Fast path
-  if (dkLen <= 64) return blake2b.create({ dkLen }).update(T8).update(A8).digest();
+  if (dkLen <= 64) return blake2b.create({ dkLen }).update(T8).update(A).digest();
   const out = new Uint8Array(dkLen);
-  let V = blake2b.create({}).update(T8).update(A8).digest();
+  let V = blake2b.create({}).update(T8).update(A).digest();
   let pos = 0;
   // First block
   out.set(V.subarray(0, 32));
@@ -145,7 +165,7 @@ function Hp(A: Uint32Array, dkLen: number) {
   }
   // Last block
   out.set(blake2b(V, { dkLen: dkLen - pos }), pos);
-  clean(V, T);
+  clean(V, T8);
   return u32(out);
 }
 
@@ -251,20 +271,30 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
   //       LE32(length(S)) || S ||  LE32(length(K)) || K ||
   //       LE32(length(X)) || X)
   const h = blake2b.create();
-  const BUF = new Uint32Array(1);
-  const BUF8 = u8(BUF);
+  // FIX: was `new Uint32Array(1)` aliased via `u8()` as a Uint8Array view.
+  // Writing to the Uint32Array and reading back via the view produced bytes in
+  // CPU-native order. On little-endian (x86) this accidentally matched the
+  // LE32() encoding the RFC requires. On big-endian (s390x) it produced the
+  // wrong byte order, causing a completely different H0 and therefore a wrong
+  // derived key. Now we use a plain 4-byte buffer and writeLE32() to encode
+  // each value explicitly, which is portable across all architectures.
+  const BUF8 = new Uint8Array(4);
   for (let item of [p, dkLen, m, t, version, type]) {
-    BUF[0] = item;
+    writeLE32(BUF8, 0, item);
     h.update(BUF8);
   }
   for (let i of [password, salt, key, personalization]) {
-    BUF[0] = i.length; // BUF is u32 array, this is valid
+    writeLE32(BUF8, 0, i.length);
     h.update(BUF8).update(i);
   }
-  const H0 = new Uint32Array(18);
-  const H0_8 = u8(H0);
+  // FIX: was `new Uint32Array(18)` with a Uint8Array view for digestInto,
+  // then H0[16] and H0[17] written as Uint32 (CPU-native byte order).
+  // We now keep H0 as a plain byte buffer throughout. blake2b's digestInto
+  // writes correct bytes (blake2b output is always little-endian by spec).
+  // The index and lane fields at byte offsets 64 and 68 are written with
+  // writeLE32 so they are always in the correct LE32 format for Hp().
+  const H0_8 = new Uint8Array(18 * 4); // 18 x 4 bytes = 72 bytes
   h.digestInto(H0_8);
-  // 256 u32 = 1024 (BLOCK_SIZE), fills A2_BUF on processing
 
   // Params
   const lanes = p;
@@ -278,15 +308,17 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
     throw new Error('"maxmem" expected <2**32, got: maxmem=' + maxmem + ', memused=' + memUsed);
   const B = new Uint32Array(memUsed);
   // Fill first blocks
+  // H0 bytes 64..67 = LE32(block index: 0 or 1)
+  // H0 bytes 68..71 = LE32(lane index)
   for (let l = 0; l < p; l++) {
     const i = 256 * laneLen * l;
     // B[i][0] = H'^(1024)(H_0 || LE32(0) || LE32(i))
-    H0[17] = l;
-    H0[16] = 0;
-    B.set(Hp(H0, 1024), i);
+    writeLE32(H0_8, 17 * 4, l); // lane index at byte offset 68
+    writeLE32(H0_8, 16 * 4, 0); // block index 0 at byte offset 64
+    B.set(Hp(H0_8, 1024), i);
     // B[i][1] = H'^(1024)(H_0 || LE32(1) || LE32(i))
-    H0[16] = 1;
-    B.set(Hp(H0, 1024), i + 256);
+    writeLE32(H0_8, 16 * 4, 1); // block index 1 at byte offset 64
+    B.set(Hp(H0_8, 1024), i + 256);
   }
   let perBlock = () => {};
   if (onProgress) {
@@ -301,7 +333,7 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
         onProgress(blockCnt / totalBlock);
     };
   }
-  clean(BUF, H0);
+  clean(BUF8, H0_8);
   return { type, mP, p, t, version, B, laneLen, lanes, segmentLen, dkLen, perBlock, asyncTick };
 }
 
@@ -309,7 +341,7 @@ function argon2Output(B: Uint32Array, p: number, laneLen: number, dkLen: number)
   const B_final = new Uint32Array(256);
   for (let l = 0; l < p; l++)
     for (let j = 0; j < 256; j++) B_final[j] ^= B[256 * (laneLen * l + laneLen - 1) + j];
-  const res = u8(Hp(B_final, dkLen));
+  const res = u8(Hp(u8(B_final), dkLen));
   clean(B_final);
   return res;
 }
