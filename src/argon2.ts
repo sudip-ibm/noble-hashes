@@ -10,7 +10,16 @@
  */
 import { add3H, add3L, rotr32H, rotr32L, rotrBH, rotrBL, rotrSH, rotrSL } from './_u64.ts';
 import { blake2b } from './blake2.ts';
-import { anumber, clean, kdfInputToBytes, nextTick, u32, u8, type KDFInput } from './utils.ts';
+import {
+  anumber,
+  clean,
+  kdfInputToBytes,
+  nextTick,
+  swap32IfBE,
+  u32,
+  u8,
+  type KDFInput,
+} from './utils.ts';
 
 const AT = { Argond2d: 0, Argon2i: 1, Argon2id: 2 } as const;
 type Types = (typeof AT)[keyof typeof AT];
@@ -122,22 +131,28 @@ function block(x: Uint32Array, xPos: number, yPos: number, outPos: number, needX
   clean(A2_BUF);
 }
 
-function writeLE32(dst: Uint8Array, offset: number, val: number) {
-  dst[offset + 0] = (val >>> 0) & 0xff;  // least significant byte always first
-  dst[offset + 1] = (val >>> 8) & 0xff;
-  dst[offset + 2] = (val >>> 16) & 0xff;
-  dst[offset + 3] = (val >>> 24) & 0xff; // most significant byte always last
-}
-
 // Variable-Length Hash Function H'
-function Hp(A: Uint8Array, dkLen: number) {
-
-  const T8 = new Uint8Array(4);
-  writeLE32(T8, 0, dkLen);
+//
+// The words stored in B[] are kept in CPU-native byte order throughout, so
+// that G() can do arithmetic on them directly without any swapping.
+//
+// Hp() is the only place where blake2b output bytes cross into B[]:
+//   blake2b always produces LE bytes  →  u32() reinterprets them as u32 words
+//   →  on BE, each word is byte-swapped relative to its true LE value
+//   →  swap32IfBE() corrects this, giving native-order words for B[].
+//
+// On LE: swap32IfBE is a no-op, behaviour is identical to the original code.
+function Hp(A: Uint32Array, dkLen: number) {
+  const A8 = u8(A);
+  const T = new Uint32Array(1);
+  const T8 = u8(T);
+  T[0] = dkLen;
   // Fast path
-  if (dkLen <= 64) return blake2b.create({ dkLen }).update(T8).update(A).digest();
+  if (dkLen <= 64) {
+    return swap32IfBE(u32(blake2b.create({ dkLen }).update(T8).update(A8).digest()));
+  }
   const out = new Uint8Array(dkLen);
-  let V = blake2b.create({}).update(T8).update(A).digest();
+  let V = blake2b.create({}).update(T8).update(A8).digest();
   let pos = 0;
   // First block
   out.set(V.subarray(0, 32));
@@ -151,8 +166,8 @@ function Hp(A: Uint8Array, dkLen: number) {
   }
   // Last block
   out.set(blake2b(V, { dkLen: dkLen - pos }), pos);
-  clean(V, T8);
-  return u32(out);
+  clean(V, T);
+  return swap32IfBE(u32(out));
 }
 
 // Used only inside process block!
@@ -257,18 +272,20 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
   //       LE32(length(S)) || S ||  LE32(length(K)) || K ||
   //       LE32(length(X)) || X)
   const h = blake2b.create();
-  const BUF8 = new Uint8Array(4);
+  const BUF = new Uint32Array(1);
+  const BUF8 = u8(BUF);
   for (let item of [p, dkLen, m, t, version, type]) {
-    writeLE32(BUF8, 0, item);
+    BUF[0] = item;
     h.update(BUF8);
   }
   for (let i of [password, salt, key, personalization]) {
-    writeLE32(BUF8, 0, i.length);
+    BUF[0] = i.length; // BUF is u32 array, this is valid
     h.update(BUF8).update(i);
   }
-  
-  const H0_8 = new Uint8Array(18 * 4); // 18 x 4 bytes = 72 bytes
+  const H0 = new Uint32Array(18);
+  const H0_8 = u8(H0);
   h.digestInto(H0_8);
+  // 256 u32 = 1024 (BLOCK_SIZE), fills A2_BUF on processing
 
   // Params
   const lanes = p;
@@ -282,17 +299,15 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
     throw new Error('"maxmem" expected <2**32, got: maxmem=' + maxmem + ', memused=' + memUsed);
   const B = new Uint32Array(memUsed);
   // Fill first blocks
-  // H0 bytes 64..67 = LE32(block index: 0 or 1)
-  // H0 bytes 68..71 = LE32(lane index)
   for (let l = 0; l < p; l++) {
     const i = 256 * laneLen * l;
     // B[i][0] = H'^(1024)(H_0 || LE32(0) || LE32(i))
-    writeLE32(H0_8, 17 * 4, l); // lane index at byte offset 68
-    writeLE32(H0_8, 16 * 4, 0); // block index 0 at byte offset 64
-    B.set(Hp(H0_8, 1024), i);
+    H0[17] = l;
+    H0[16] = 0;
+    B.set(Hp(H0, 1024), i);
     // B[i][1] = H'^(1024)(H_0 || LE32(1) || LE32(i))
-    writeLE32(H0_8, 16 * 4, 1); // block index 1 at byte offset 64
-    B.set(Hp(H0_8, 1024), i + 256);
+    H0[16] = 1;
+    B.set(Hp(H0, 1024), i + 256);
   }
   let perBlock = () => {};
   if (onProgress) {
@@ -307,7 +322,7 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
         onProgress(blockCnt / totalBlock);
     };
   }
-  clean(BUF8, H0_8);
+  clean(BUF, H0);
   return { type, mP, p, t, version, B, laneLen, lanes, segmentLen, dkLen, perBlock, asyncTick };
 }
 
@@ -315,7 +330,12 @@ function argon2Output(B: Uint32Array, p: number, laneLen: number, dkLen: number)
   const B_final = new Uint32Array(256);
   for (let l = 0; l < p; l++)
     for (let j = 0; j < 256; j++) B_final[j] ^= B[256 * (laneLen * l + laneLen - 1) + j];
-  const res = u8(Hp(u8(B_final), dkLen));
+  // B_final words are in CPU-native order (populated by Hp via swap32IfBE).
+  // Hp() expects its input as a Uint32Array in native order and reads it as
+  // bytes via u8(). On BE those bytes would be in native (BE) order, but
+  // blake2b in this library normalises its input words with swap32IfBE when
+  // loading, so the hash result is always correct regardless.
+  const res = u8(Hp(B_final, dkLen));
   clean(B_final);
   return res;
 }
