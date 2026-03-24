@@ -122,18 +122,6 @@ function block(x: Uint32Array, xPos: number, yPos: number, outPos: number, needX
   clean(A2_BUF);
 }
 
-/**
- * Write a 32-bit unsigned integer into a Uint8Array at the given offset
- * in little-endian byte order, as required by RFC 9106.
- *
- * This replaces the previous pattern of aliasing a Uint32Array with a
- * Uint8Array view, which produced CPU-native byte order. On little-endian
- * machines (x86) that happened to match the RFC, but on big-endian machines
- * (s390x) it produced the wrong byte sequence and therefore a wrong hash.
- *
- * Bitwise shifts operate on numeric values, not memory layout, so this
- * produces identical bytes on every architecture.
- */
 function writeLE32(dst: Uint8Array, offset: number, val: number) {
   dst[offset + 0] = (val >>> 0) & 0xff;  // least significant byte always first
   dst[offset + 1] = (val >>> 8) & 0xff;
@@ -143,9 +131,7 @@ function writeLE32(dst: Uint8Array, offset: number, val: number) {
 
 // Variable-Length Hash Function H'
 function Hp(A: Uint8Array, dkLen: number) {
-  // FIX: was `new Uint32Array(1)` aliased with a Uint8Array view.
-  // That encoded dkLen in CPU-native byte order, which is wrong on big-endian.
-  // Now we write the 4-byte LE32(dkLen) prefix explicitly and portably.
+
   const T8 = new Uint8Array(4);
   writeLE32(T8, 0, dkLen);
   // Fast path
@@ -271,13 +257,6 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
   //       LE32(length(S)) || S ||  LE32(length(K)) || K ||
   //       LE32(length(X)) || X)
   const h = blake2b.create();
-  // FIX: was `new Uint32Array(1)` aliased via `u8()` as a Uint8Array view.
-  // Writing to the Uint32Array and reading back via the view produced bytes in
-  // CPU-native order. On little-endian (x86) this accidentally matched the
-  // LE32() encoding the RFC requires. On big-endian (s390x) it produced the
-  // wrong byte order, causing a completely different H0 and therefore a wrong
-  // derived key. Now we use a plain 4-byte buffer and writeLE32() to encode
-  // each value explicitly, which is portable across all architectures.
   const BUF8 = new Uint8Array(4);
   for (let item of [p, dkLen, m, t, version, type]) {
     writeLE32(BUF8, 0, item);
@@ -287,12 +266,7 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
     writeLE32(BUF8, 0, i.length);
     h.update(BUF8).update(i);
   }
-  // FIX: was `new Uint32Array(18)` with a Uint8Array view for digestInto,
-  // then H0[16] and H0[17] written as Uint32 (CPU-native byte order).
-  // We now keep H0 as a plain byte buffer throughout. blake2b's digestInto
-  // writes correct bytes (blake2b output is always little-endian by spec).
-  // The index and lane fields at byte offsets 64 and 68 are written with
-  // writeLE32 so they are always in the correct LE32 format for Hp().
+  
   const H0_8 = new Uint8Array(18 * 4); // 18 x 4 bytes = 72 bytes
   h.digestInto(H0_8);
 
