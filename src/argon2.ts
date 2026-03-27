@@ -10,16 +10,7 @@
  */
 import { add3H, add3L, rotr32H, rotr32L, rotrBH, rotrBL, rotrSH, rotrSL } from './_u64.ts';
 import { blake2b } from './blake2.ts';
-import {
-  anumber,
-  clean,
-  kdfInputToBytes,
-  nextTick,
-  swap32IfBE,
-  u32,
-  u8,
-  type KDFInput,
-} from './utils.ts';
+import { anumber, clean, kdfInputToBytes, nextTick, swap8IfBE, u32, u8, type KDFInput } from './utils.ts';
 
 const AT = { Argond2d: 0, Argon2i: 1, Argon2id: 2 } as const;
 type Types = (typeof AT)[keyof typeof AT];
@@ -132,25 +123,14 @@ function block(x: Uint32Array, xPos: number, yPos: number, outPos: number, needX
 }
 
 // Variable-Length Hash Function H'
-//
-// The words stored in B[] are kept in CPU-native byte order throughout, so
-// that G() can do arithmetic on them directly without any swapping.
-//
-// Hp() is the only place where blake2b output bytes cross into B[]:
-//   blake2b always produces LE bytes  →  u32() reinterprets them as u32 words
-//   →  on BE, each word is byte-swapped relative to its true LE value
-//   →  swap32IfBE() corrects this, giving native-order words for B[].
-//
-// On LE: swap32IfBE is a no-op, behaviour is identical to the original code.
 function Hp(A: Uint32Array, dkLen: number) {
-  const A8 = u8(A);
+  const A_fixed = swap32IfBE(A);
+  const A8 = u8(A_fixed);
   const T = new Uint32Array(1);
   const T8 = u8(T);
   T[0] = dkLen;
   // Fast path
-  if (dkLen <= 64) {
-    return swap32IfBE(u32(blake2b.create({ dkLen }).update(T8).update(A8).digest()));
-  }
+  if (dkLen <= 64) return blake2b.create({ dkLen }).update(T8).update(A8).digest();
   const out = new Uint8Array(dkLen);
   let V = blake2b.create({}).update(T8).update(A8).digest();
   let pos = 0;
@@ -167,7 +147,7 @@ function Hp(A: Uint32Array, dkLen: number) {
   // Last block
   out.set(blake2b(V, { dkLen: dkLen - pos }), pos);
   clean(V, T);
-  return swap32IfBE(u32(out));
+  return u32(out);
 }
 
 // Used only inside process block!
@@ -275,7 +255,7 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
   const BUF = new Uint32Array(1);
   const BUF8 = u8(BUF);
   for (let item of [p, dkLen, m, t, version, type]) {
-    BUF[0] = item;
+    BUF[0] = swap8IfBE(item);
     h.update(BUF8);
   }
   for (let i of [password, salt, key, personalization]) {
@@ -330,11 +310,6 @@ function argon2Output(B: Uint32Array, p: number, laneLen: number, dkLen: number)
   const B_final = new Uint32Array(256);
   for (let l = 0; l < p; l++)
     for (let j = 0; j < 256; j++) B_final[j] ^= B[256 * (laneLen * l + laneLen - 1) + j];
-  // B_final words are in CPU-native order (populated by Hp via swap32IfBE).
-  // Hp() expects its input as a Uint32Array in native order and reads it as
-  // bytes via u8(). On BE those bytes would be in native (BE) order, but
-  // blake2b in this library normalises its input words with swap32IfBE when
-  // loading, so the hash result is always correct regardless.
   const res = u8(Hp(B_final, dkLen));
   clean(B_final);
   return res;
