@@ -124,11 +124,11 @@ function block(x: Uint32Array, xPos: number, yPos: number, outPos: number, needX
 
 // Variable-Length Hash Function H'
 function Hp(A: Uint32Array, dkLen: number) {
-  const A_fixed = swap32IfBE(A);
+  const A_fixed = swap32IfBE(A.slice());
   const A8 = u8(A_fixed);
   const T = new Uint32Array(1);
   const T8 = u8(T);
-  T[0] = dkLen;
+  T[0] = swap8IfBE(dkLen);
   // Fast path
   if (dkLen <= 64) return blake2b.create({ dkLen }).update(T8).update(A8).digest();
   const out = new Uint8Array(dkLen);
@@ -259,7 +259,7 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
     h.update(BUF8);
   }
   for (let i of [password, salt, key, personalization]) {
-    BUF[0] = i.length; // BUF is u32 array, this is valid
+    BUF[0] = swap8IfBE(i.length); // BUF is u32 array, this is valid
     h.update(BUF8).update(i);
   }
   const H0 = new Uint32Array(18);
