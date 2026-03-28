@@ -265,6 +265,7 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
   const H0 = new Uint32Array(18);
   const H0_8 = u8(H0);
   h.digestInto(H0_8);
+  swap32IfBE(H0);
   // 256 u32 = 1024 (BLOCK_SIZE), fills A2_BUF on processing
 
   // Params
