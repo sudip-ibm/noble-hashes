@@ -123,30 +123,38 @@ function block(x: Uint32Array, xPos: number, yPos: number, outPos: number, needX
 }
 
 // Variable-Length Hash Function H'
-function Hp(A: Uint32Array, dkLen: number) {
-  const A8 = u8(A);
-  const T = new Uint32Array(1);
-  const T8 = u8(T);
-  T[0] = dkLen;
+// RFC 9106: MUST operate on bytes and return bytes
+function Hp(A: Uint32Array, dkLen: number): Uint8Array {
+  // Serialize A as LE32 bytes explicitly
+  const A8 = new Uint8Array(A.length * 4);
+  const dvA = new DataView(A8.buffer);
+  for (let i = 0; i < A.length; i++) dvA.setUint32(i * 4, A[i], true);
+
+  // LE32(dkLen)
+  const T8 = new Uint8Array(4);
+  new DataView(T8.buffer).setUint32(0, dkLen, true);
+
   // Fast path
-  if (dkLen <= 64) return blake2b.create({ dkLen }).update(T8).update(A8).digest();
+  if (dkLen <= 64) {
+    return blake2b.create({ dkLen }).update(T8).update(A8).digest();
+  }
+
   const out = new Uint8Array(dkLen);
   let V = blake2b.create({}).update(T8).update(A8).digest();
+
   let pos = 0;
-  // First block
   out.set(V.subarray(0, 32));
   pos += 32;
-  // Rest blocks
-  for (; dkLen - pos > 64; pos += 32) {
-    const Vh = blake2b.create({}).update(V);
-    Vh.digestInto(V);
-    Vh.destroy();
+
+  while (dkLen - pos > 64) {
+    V = blake2b(V);
     out.set(V.subarray(0, 32), pos);
+    pos += 32;
   }
-  // Last block
+
   out.set(blake2b(V, { dkLen: dkLen - pos }), pos);
-  clean(V, T);
-  return u32(out);
+  clean(V, A);
+  return out;
 }
 
 // Used only inside process block!
@@ -305,14 +313,18 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
   return { type, mP, p, t, version, B, laneLen, lanes, segmentLen, dkLen, perBlock, asyncTick };
 }
 
+
 function argon2Output(B: Uint32Array, p: number, laneLen: number, dkLen: number) {
   const B_final = new Uint32Array(256);
-  for (let l = 0; l < p; l++)
-    for (let j = 0; j < 256; j++) B_final[j] ^= B[256 * (laneLen * l + laneLen - 1) + j];
-  const res = u8(Hp(B_final, dkLen));
+  for (let l = 0; l < p; l++) {
+    const off = 256 * (laneLen * l + laneLen - 1);
+    for (let j = 0; j < 256; j++) B_final[j] ^= B[off + j];
+  }
+  const out = Hp(B_final, dkLen); // ✅ Hp now returns bytes
   clean(B_final);
-  return res;
+  return out;
 }
+
 
 function processBlock(
   B: Uint32Array,
