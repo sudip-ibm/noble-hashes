@@ -265,6 +265,7 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
   const H0 = new Uint32Array(18);
   const H0_8 = u8(H0);
   h.digestInto(H0_8);
+  swap32IfBE(H0);
   // 256 u32 = 1024 (BLOCK_SIZE), fills A2_BUF on processing
 
   // Params
@@ -282,11 +283,11 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
   for (let l = 0; l < p; l++) {
     const i = 256 * laneLen * l;
     // B[i][0] = H'^(1024)(H_0 || LE32(0) || LE32(i))
-    H0[17] = l;
-    H0[16] = 0;
+    H0[17] = swap8IfBE(l);
+    H0[16] = swap8IfBE(0);
     B.set(Hp(H0, 1024), i);
     // B[i][1] = H'^(1024)(H_0 || LE32(1) || LE32(i))
-    H0[16] = 1;
+    H0[16] = swap8IfBE(1);
     B.set(Hp(H0, 1024), i + 256);
   }
   let perBlock = () => {};
