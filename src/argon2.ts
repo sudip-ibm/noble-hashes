@@ -311,7 +311,8 @@ function argon2Output(B: Uint32Array, p: number, laneLen: number, dkLen: number)
   const B_final = new Uint32Array(256);
   for (let l = 0; l < p; l++)
     for (let j = 0; j < 256; j++) B_final[j] ^= B[256 * (laneLen * l + laneLen - 1) + j];
-  const out32 = Hp(B_final, dkLen);
+  const out = Hp(B_final, dkLen);
+  const out32 = u32(out);
   if (!isLE) swap32IfBE(out32);
   const res = u8(out32);
   clean(B_final);
