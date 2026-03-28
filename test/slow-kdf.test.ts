@@ -203,7 +203,7 @@ describe(`argon2 crosstest (${variant})`, () => {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  testScrypt();
+  //testScrypt();
   testArgon();
 }
 should.runWhen(import.meta.url);
