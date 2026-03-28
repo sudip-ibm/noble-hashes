@@ -325,6 +325,9 @@ function argon2Output(B: Uint32Array, p: number, laneLen: number, dkLen: number)
   }
   const out = Hp(B_final, dkLen); // ✅ Hp now returns bytes
   clean(B_final);
+  if (!isLE) {
+    swap32IfBE(new Uint32Array(out.buffer));
+  }
   return out;
 }
 
