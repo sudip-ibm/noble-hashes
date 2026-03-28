@@ -10,7 +10,7 @@
  */
 import { add3H, add3L, rotr32H, rotr32L, rotrBH, rotrBL, rotrSH, rotrSL } from './_u64.ts';
 import { blake2b } from './blake2.ts';
-import { anumber, clean, kdfInputToBytes, nextTick, swap32IfBE, swap8IfBE, u32, u8, type KDFInput } from './utils.ts';
+import { anumber, clean, kdfInputToBytes, nextTick, swap32IfBE, swap8IfBE, isLE, u32, u8, type KDFInput } from './utils.ts';
 
 const AT = { Argond2d: 0, Argon2i: 1, Argon2id: 2 } as const;
 type Types = (typeof AT)[keyof typeof AT];
