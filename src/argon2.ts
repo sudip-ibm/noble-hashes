@@ -147,7 +147,7 @@ function Hp(A: Uint32Array, dkLen: number) {
   // Last block
   out.set(blake2b(V, { dkLen: dkLen - pos }), pos);
   clean(V, T);
-  return u32(out);
+  return swap32IfBE(u32(out));
 }
 
 // Used only inside process block!
