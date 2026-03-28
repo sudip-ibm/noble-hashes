@@ -325,7 +325,6 @@ function argon2Output(B: Uint32Array, p: number, laneLen: number, dkLen: number)
   return out;
 }
 
-
 function processBlock(
   B: Uint32Array,
   address: Uint32Array,
