@@ -10,7 +10,7 @@
  */
 import { add3H, add3L, rotr32H, rotr32L, rotrBH, rotrBL, rotrSH, rotrSL } from './_u64.ts';
 import { blake2b } from './blake2.ts';
-import { anumber, clean, kdfInputToBytes, nextTick, swap32IfBE, swap8IfBE, isLE, u32, u8, type KDFInput } from './utils.ts';
+import { anumber, clean, kdfInputToBytes, nextTick, u32, u8, type KDFInput } from './utils.ts';
 
 const AT = { Argond2d: 0, Argon2i: 1, Argon2id: 2 } as const;
 type Types = (typeof AT)[keyof typeof AT];
@@ -124,11 +124,10 @@ function block(x: Uint32Array, xPos: number, yPos: number, outPos: number, needX
 
 // Variable-Length Hash Function H'
 function Hp(A: Uint32Array, dkLen: number) {
-  const A_le = swap32IfBE(A.slice());
-  const A8 = u8(A_le);
+  const A8 = u8(A);
   const T = new Uint32Array(1);
   const T8 = u8(T);
-  T[0] = swap8IfBE(dkLen);
+  T[0] = dkLen;
   // Fast path
   if (dkLen <= 64) return blake2b.create({ dkLen }).update(T8).update(A8).digest();
   const out = new Uint8Array(dkLen);
@@ -147,7 +146,7 @@ function Hp(A: Uint32Array, dkLen: number) {
   // Last block
   out.set(blake2b(V, { dkLen: dkLen - pos }), pos);
   clean(V, T);
-  return swap32IfBE(u32(out));
+  return u32(out);
 }
 
 // Used only inside process block!
@@ -255,17 +254,16 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
   const BUF = new Uint32Array(1);
   const BUF8 = u8(BUF);
   for (let item of [p, dkLen, m, t, version, type]) {
-    BUF[0] = swap8IfBE(item);
+    BUF[0] = item;
     h.update(BUF8);
   }
   for (let i of [password, salt, key, personalization]) {
-    BUF[0] = swap8IfBE(i.length); // BUF is u32 array, this is valid
+    BUF[0] = i.length; // BUF is u32 array, this is valid
     h.update(BUF8).update(i);
   }
   const H0 = new Uint32Array(18);
   const H0_8 = u8(H0);
   h.digestInto(H0_8);
-  swap32IfBE(H0);
   // 256 u32 = 1024 (BLOCK_SIZE), fills A2_BUF on processing
 
   // Params
@@ -311,10 +309,7 @@ function argon2Output(B: Uint32Array, p: number, laneLen: number, dkLen: number)
   const B_final = new Uint32Array(256);
   for (let l = 0; l < p; l++)
     for (let j = 0; j < 256; j++) B_final[j] ^= B[256 * (laneLen * l + laneLen - 1) + j];
-  const out = Hp(B_final, dkLen);
-  const out32 = u32(out);
-  if (!isLE) swap32IfBE(out32);
-  const res = u8(out32);
+  const res = u8(Hp(B_final, dkLen));
   clean(B_final);
   return res;
 }
