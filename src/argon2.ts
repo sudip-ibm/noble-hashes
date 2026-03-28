@@ -124,12 +124,11 @@ function block(x: Uint32Array, xPos: number, yPos: number, outPos: number, needX
 
 // Variable-Length Hash Function H'
 function Hp(A: Uint32Array, dkLen: number) {
-  const A8 = u8(A);
   const A_le = swap32IfBE(A.slice());
   const A8 = u8(A_le);
   const T = new Uint32Array(1);
   const T8 = u8(T);
-  T[0] = dkLen;
+  T[0] = swap8IfBE(dkLen);
   // Fast path
   if (dkLen <= 64) return blake2b.create({ dkLen }).update(T8).update(A8).digest();
   const out = new Uint8Array(dkLen);
