@@ -114,7 +114,7 @@ function block(x: Uint32Array, xPos: number, yPos: number, outPos: number, needX
 }
 
 // Variable-Length Hash Function H'
-function Hp(A: Uint32Array, dkLen: number): Uint8Array {
+function Hp(A: Uint32Array, dkLen: number) {
   swap32IfBE(A); // temporarily ensure LE bytes for hashing
   const A8 = u8(A);
   const T = new Uint32Array(1);
