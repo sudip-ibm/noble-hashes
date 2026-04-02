@@ -143,7 +143,7 @@ function Hp(A: Uint32Array, dkLen: number): Uint8Array {
   }
   swap32IfBE(A); // restore A back to host's native endianness
   clean(T);
-  return out; // guaranteed to return LE byte array
+  return u32(out); // guaranteed to return LE byte array
 }
 
 function indexAlpha(
@@ -281,7 +281,7 @@ function argon2Output(B: Uint32Array, p: number, laneLen: number, dkLen: number)
     for (let j = 0; j < 256; j++) B_final[j] ^= B[256 * (laneLen * l + laneLen - 1) + j];
   
   // Fix: Directly return the LE byte array rather than casting to generic/truncated arrays
-  const res = Hp(B_final, dkLen); 
+  const res = u8(Hp(B_final, dkLen)); 
   clean(B_final);
   return res;
 }
