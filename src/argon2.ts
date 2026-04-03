@@ -4,13 +4,12 @@
  * * argon uses uint64, but JS doesn't have fast uint64array
  * * uint64 multiplication is 1/3 of time
  * * `P` function would be very nice with u64, because most of value will be in registers,
- * hovewer with u32 it will require 32 registers, which is too much.
+ *   hovewer with u32 it will require 32 registers, which is too much.
  * * JS arrays do slow bound checks, so reading from `A2_BUF` slows it down
  * @module
  */
 import { add3H, add3L, rotr32H, rotr32L, rotrBH, rotrBL, rotrSH, rotrSL } from './_u64.ts';
 import { blake2b } from './blake2.ts';
-// Added swap32IfBE to imports
 import { anumber, clean, kdfInputToBytes, nextTick, u32, u8, swap32IfBE, type KDFInput } from './utils.ts';
 
 const AT = { Argond2d: 0, Argon2i: 1, Argon2id: 2 } as const;
@@ -39,23 +38,28 @@ function mul(a: number, b: number) {
 }
 
 function mul2(a: number, b: number) {
+  // 2 * a * b (via shifts)
   const { h, l } = mul(a, b);
   return { h: ((h << 1) | (l >>> 31)) & 0xffff_ffff, l: (l << 1) & 0xffff_ffff };
 }
 
+// BlaMka permutation for Argon2
+// A + B + (2 * u32(A) * u32(B))
 function blamka(Ah: number, Al: number, Bh: number, Bl: number) {
   const { h: Ch, l: Cl } = mul2(Al, Bl);
+  // A + B + (2 * A * B)
   const Rll = add3L(Al, Bl, Cl);
   return { h: add3H(Rll, Ah, Bh, Ch), l: Rll | 0 };
 }
 
-const A2_BUF = new Uint32Array(256);
+// Temporary block buffer
+const A2_BUF = new Uint32Array(256); // 1024 bytes (matrix 16x16)
 
 function G(a: number, b: number, c: number, d: number) {
-  let Al = A2_BUF[2*a], Ah = A2_BUF[2*a + 1];
-  let Bl = A2_BUF[2*b], Bh = A2_BUF[2*b + 1];
-  let Cl = A2_BUF[2*c], Ch = A2_BUF[2*c + 1];
-  let Dl = A2_BUF[2*d], Dh = A2_BUF[2*d + 1];
+  let Al = A2_BUF[2*a], Ah = A2_BUF[2*a + 1]; // prettier-ignore
+  let Bl = A2_BUF[2*b], Bh = A2_BUF[2*b + 1]; // prettier-ignore
+  let Cl = A2_BUF[2*c], Ch = A2_BUF[2*c + 1]; // prettier-ignore
+  let Dl = A2_BUF[2*d], Dh = A2_BUF[2*d + 1]; // prettier-ignore
 
   ({ h: Ah, l: Al } = blamka(Ah, Al, Bh, Bl));
   ({ Dh, Dl } = { Dh: Dh ^ Ah, Dl: Dl ^ Al });
@@ -79,6 +83,7 @@ function G(a: number, b: number, c: number, d: number) {
   ((A2_BUF[2 * d] = Dl), (A2_BUF[2 * d + 1] = Dh));
 }
 
+// prettier-ignore
 function P(
   v00: number, v01: number, v02: number, v03: number, v04: number, v05: number, v06: number, v07: number,
   v08: number, v09: number, v10: number, v11: number, v12: number, v13: number, v14: number, v15: number,
@@ -95,13 +100,17 @@ function P(
 
 function block(x: Uint32Array, xPos: number, yPos: number, outPos: number, needXor: boolean) {
   for (let i = 0; i < 256; i++) A2_BUF[i] = x[xPos + i] ^ x[yPos + i];
+  // columns (8)
   for (let i = 0; i < 128; i += 16) {
+    // prettier-ignore
     P(
       i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7,
       i + 8, i + 9, i + 10, i + 11, i + 12, i + 13, i + 14, i + 15
     );
   }
+  // rows (8)
   for (let i = 0; i < 16; i += 2) {
+    // prettier-ignore
     P(
       i, i + 1, i + 16, i + 17, i + 32, i + 33, i + 48, i + 49,
       i + 64, i + 65, i + 80, i + 81, i + 96, i + 97, i + 112, i + 113
@@ -115,18 +124,18 @@ function block(x: Uint32Array, xPos: number, yPos: number, outPos: number, needX
 
 // Variable-Length Hash Function H'
 function Hp(A: Uint32Array, dkLen: number) {
-  swap32IfBE(A); // temporarily ensure LE bytes for hashing
+  swap32IfBE(A);
   const A8 = u8(A);
   const T = new Uint32Array(1);
   T[0] = dkLen;
-  swap32IfBE(T); // temporarily ensure LE bytes for hashing
+  swap32IfBE(T);
   const T8 = u8(T);
-
   let out: Uint8Array;
   // Fast path
   if (dkLen <= 64) {
     out = blake2b.create({ dkLen }).update(T8).update(A8).digest();
-  } else {
+  }
+  else {
     out = new Uint8Array(dkLen);
     let V = blake2b.create({}).update(T8).update(A8).digest();
     let pos = 0;
@@ -141,11 +150,12 @@ function Hp(A: Uint32Array, dkLen: number) {
     out.set(blake2b(V, { dkLen: dkLen - pos }), pos);
     clean(V);
   }
-  swap32IfBE(A); // restore A back to host's native endianness
+  swap32IfBE(A); // restore A back to host endianness
   clean(T);
-  return u32(out); // guaranteed to return LE byte array
+  return u32(out);
 }
 
+// Used only inside process block!
 function indexAlpha(
   r: number,
   s: number,
@@ -155,6 +165,7 @@ function indexAlpha(
   randL: number,
   sameLane: boolean = false
 ) {
+  // This is ugly, but close enough to reference implementation.
   let area: number;
   if (r === 0) {
     if (s === 0) area = index - 1;
@@ -167,16 +178,35 @@ function indexAlpha(
   return (startPos + rel) % laneLen;
 }
 
+/**
+ * Argon2 options.
+ * * t: time cost, m: mem cost in kb, p: parallelization.
+ * * key: optional key. personalization: arbitrary extra data.
+ * * dkLen: desired number of output bytes.
+ */
 export type ArgonOpts = {
+  /** Time cost measured in iterations. */
   t: number;
+  /** Memory cost in kibibytes. */
   m: number;
+  /** Parallelization parameter. */
   p: number;
+  /** Argon2 version number. Defaults to `0x13`. */
   version?: number;
+  /** Optional secret key mixed into initialization. */
   key?: KDFInput;
+  /** Optional personalization string or bytes. */
   personalization?: KDFInput;
+  /** Desired number of output bytes. */
   dkLen?: number;
+  /** Max scheduler block time in milliseconds for the async variants. */
   asyncTick?: number;
+  /** Maximum temporary memory budget in bytes. */
   maxmem?: number;
+  /**
+   * Optional progress callback invoked during long-running derivations.
+   * param progress - completion fraction in the `0..1` range
+   */
   onProgress?: (progress: number) => void;
 };
 
@@ -202,6 +232,9 @@ function argon2Opts(opts: ArgonOpts) {
   if (onProgress !== undefined && typeof onProgress !== 'function')
     throw new Error('"progressCb" must be a function');
   anumber(asyncTick, 'asyncTick');
+  /*
+  Memory size m MUST be an integer number of kibibytes from 8*p to 2^(32)-1. The actual number of blocks is m', which is m rounded down to the nearest multiple of 4*p.
+  */
   if (!isU32(m) || m < 8 * p) throw new Error('"m" (memory) must be at least 8*p bytes');
   if (version !== 0x10 && version !== 0x13)
     throw new Error('"version" must be 0x10 or 0x13, got ' + version);
@@ -216,53 +249,63 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
   if (!Object.values(AT).includes(type)) throw new Error('"type" was invalid');
   let { p, dkLen, m, t, version, key, personalization, maxmem, onProgress, asyncTick } =
     argon2Opts(opts);
-
+  // Validation
   key = abytesOrZero(key, 'key');
   personalization = abytesOrZero(personalization, 'personalization');
+  // H_0 = H^(64)(LE32(p) || LE32(T) || LE32(m) || LE32(t) ||
+  //       LE32(v) || LE32(y) || LE32(length(P)) || P ||
+  //       LE32(length(S)) || S ||  LE32(length(K)) || K ||
+  //       LE32(length(X)) || X)
   const h = blake2b.create();
   const BUF = new Uint32Array(1);
   const BUF8 = u8(BUF);
-  
   for (let item of [p, dkLen, m, t, version, type]) {
     BUF[0] = item;
-    swap32IfBE(BUF); // Fix: Force BE layout -> LE byte stream
+    swap32IfBE(BUF);
     h.update(BUF8);
   }
   for (let i of [password, salt, key, personalization]) {
-    BUF[0] = i.length;
-    swap32IfBE(BUF); // Fix: Force BE layout -> LE byte stream
+    BUF[0] = i.length; // BUF is u32 array, this is valid
+    swap32IfBE(BUF);
     h.update(BUF8).update(i);
   }
   const H0 = new Uint32Array(18);
   const H0_8 = u8(H0);
   h.digestInto(H0_8);
-  swap32IfBE(H0); // Fix: Convert generated LE byte stream back to native 32-bit words
+  swap32IfBE(H0);
+  // 256 u32 = 1024 (BLOCK_SIZE), fills A2_BUF on processing
 
+  // Params
   const lanes = p;
+  // m' = 4 * p * floor (m / 4p)
   const mP = 4 * p * Math.floor(m / (ARGON2_SYNC_POINTS * p));
+  //q = m' / p columns
   const laneLen = Math.floor(mP / p);
   const segmentLen = Math.floor(laneLen / ARGON2_SYNC_POINTS);
   const memUsed = mP * 256;
   if (!isU32(maxmem) || memUsed > maxmem)
     throw new Error('"maxmem" expected <2**32, got: maxmem=' + maxmem + ', memused=' + memUsed);
   const B = new Uint32Array(memUsed);
-
+  // Fill first blocks
   for (let l = 0; l < p; l++) {
     const i = 256 * laneLen * l;
+    // B[i][0] = H'^(1024)(H_0 || LE32(0) || LE32(i))
     H0[17] = l;
     H0[16] = 0;
     const hp1 = u32(Hp(H0, 1024));
-    swap32IfBE(hp1); // Fix: Convert generated LE byte stream back to native 32-bit words
+    swap32IfBE(hp1);
     B.set(hp1, i);
-    
+    // B[i][1] = H'^(1024)(H_0 || LE32(1) || LE32(i))
     H0[16] = 1;
     const hp2 = u32(Hp(H0, 1024));
-    swap32IfBE(hp2); // Fix: Convert generated LE byte stream back to native 32-bit words
+    swap32IfBE(hp2);
     B.set(hp2, i + 256);
   }
   let perBlock = () => {};
   if (onProgress) {
     const totalBlock = t * ARGON2_SYNC_POINTS * p * segmentLen;
+    // Invoke callback if progress changes from 10.01 to 10.02
+    // Allows to draw smooth progress bar on up to 8K screen
     const callbackPer = Math.max(Math.floor(totalBlock / 10000), 1);
     let blockCnt = 0;
     perBlock = () => {
@@ -279,9 +322,7 @@ function argon2Output(B: Uint32Array, p: number, laneLen: number, dkLen: number)
   const B_final = new Uint32Array(256);
   for (let l = 0; l < p; l++)
     for (let j = 0; j < 256; j++) B_final[j] ^= B[256 * (laneLen * l + laneLen - 1) + j];
-  
-  // Fix: Directly return the LE byte array rather than casting to generic/truncated arrays
-  const res = u8(Hp(B_final, dkLen)); 
+  const res = u8(Hp(B_final, dkLen));
   clean(B_final);
   return res;
 }
@@ -317,9 +358,11 @@ function processBlock(
     randL = B[T];
     randH = B[T + 1];
   }
+  // address block
   const refLane = r === 0 && s === 0 ? l : randH % lanes;
   const refPos = indexAlpha(r, s, laneLen, segmentLen, index, randL, refLane == l);
   const refBlock = laneLen * refLane + refPos;
+  // B[i][j] = G(B[i][j-1], B[l][z])
   block(B, 256 * prev, 256 * refBlock, offset * 256, needXor);
 }
 
@@ -330,6 +373,8 @@ function argon2(type: Types, password: KDFInput, salt: KDFInput, opts: ArgonOpts
     type,
     opts
   );
+  // Pre-loop setup
+  // [address, input, zero_block] format so we can pass single U32 to block function
   const address = new Uint32Array(3 * 256);
   address[256 + 6] = mP;
   address[256 + 8] = t;
@@ -352,7 +397,9 @@ function argon2(type: Types, password: KDFInput, salt: KDFInput, opts: ArgonOpts
             block(address, 0, 2 * 256, 0, false);
           }
         }
+        // current block postion
         let offset = l * laneLen + s * segmentLen + startPos;
+        // previous block position
         let prev = offset % laneLen ? offset - 1 : offset + laneLen - 1;
         for (let index = startPos; index < segmentLen; index++, offset++, prev++) {
           perBlock();
@@ -379,18 +426,57 @@ function argon2(type: Types, password: KDFInput, salt: KDFInput, opts: ArgonOpts
   return argon2Output(B, p, laneLen, dkLen);
 }
 
+/**
+ * Argon2d GPU-resistant version.
+ * @param password - password or input key material
+ * @param salt - unique salt value
+ * @param opts - Argon2 cost and optional tuning parameters. See {@link ArgonOpts}.
+ * @returns Derived key bytes.
+ * @throws If the Argon2 input or cost parameters are invalid. {@link Error}
+ * @example
+ * Derive a key with Argon2d.
+ * ```ts
+ * argon2d('password', 'salt1234', { t: 1, m: 8, p: 1, dkLen: 32 });
+ * ```
+ */
 export const argon2d = (password: KDFInput, salt: KDFInput, opts: ArgonOpts): Uint8Array =>
   argon2(AT.Argond2d, password, salt, opts);
-
+/**
+ * Argon2i side-channel-resistant version.
+ * @param password - password or input key material
+ * @param salt - unique salt value
+ * @param opts - Argon2 cost and optional tuning parameters. See {@link ArgonOpts}.
+ * @returns Derived key bytes.
+ * @throws If the Argon2 input or cost parameters are invalid. {@link Error}
+ * @example
+ * Derive a key with Argon2i.
+ * ```ts
+ * argon2i('password', 'salt1234', { t: 1, m: 8, p: 1, dkLen: 32 });
+ * ```
+ */
 export const argon2i = (password: KDFInput, salt: KDFInput, opts: ArgonOpts): Uint8Array =>
   argon2(AT.Argon2i, password, salt, opts);
-
+/**
+ * Argon2id, combining i+d, the most popular version from RFC 9106.
+ * @param password - password or input key material
+ * @param salt - unique salt value
+ * @param opts - Argon2 cost and optional tuning parameters. See {@link ArgonOpts}.
+ * @returns Derived key bytes.
+ * @throws If the Argon2 input or cost parameters are invalid. {@link Error}
+ * @example
+ * Derive a key with Argon2id.
+ * ```ts
+ * argon2id('password', 'salt1234', { t: 1, m: 8, p: 1, dkLen: 32 });
+ * ```
+ */
 export const argon2id = (password: KDFInput, salt: KDFInput, opts: ArgonOpts): Uint8Array =>
   argon2(AT.Argon2id, password, salt, opts);
 
 async function argon2Async(type: Types, password: KDFInput, salt: KDFInput, opts: ArgonOpts) {
   const { mP, p, t, version, B, laneLen, lanes, segmentLen, dkLen, perBlock, asyncTick } =
     argon2Init(password, salt, type, opts);
+  // Pre-loop setup
+  // [address, input, zero_block] format so we can pass single U32 to block function
   const address = new Uint32Array(3 * 256);
   address[256 + 6] = mP;
   address[256 + 8] = t;
@@ -414,7 +500,9 @@ async function argon2Async(type: Types, password: KDFInput, salt: KDFInput, opts
             block(address, 0, 2 * 256, 0, false);
           }
         }
+        // current block postion
         let offset = l * laneLen + s * segmentLen + startPos;
+        // previous block position
         let prev = offset % laneLen ? offset - 1 : offset + laneLen - 1;
         for (let index = startPos; index < segmentLen; index++, offset++, prev++) {
           perBlock();
@@ -433,6 +521,7 @@ async function argon2Async(type: Types, password: KDFInput, salt: KDFInput, opts
             dataIndependent,
             needXor
           );
+          // Date.now() is not monotonic, so in case if clock goes backwards we return return control too
           const diff = Date.now() - ts;
           if (!(diff >= 0 && diff < asyncTick)) {
             await nextTick();
@@ -446,11 +535,57 @@ async function argon2Async(type: Types, password: KDFInput, salt: KDFInput, opts
   return argon2Output(B, p, laneLen, dkLen);
 }
 
-export const argon2dAsync = (password: KDFInput, salt: KDFInput, opts: ArgonOpts): Promise<Uint8Array> => 
-  argon2Async(AT.Argond2d, password, salt, opts);
-
-export const argon2iAsync = (password: KDFInput, salt: KDFInput, opts: ArgonOpts): Promise<Uint8Array> => 
-  argon2Async(AT.Argon2i, password, salt, opts);
-
-export const argon2idAsync = (password: KDFInput, salt: KDFInput, opts: ArgonOpts): Promise<Uint8Array> => 
-  argon2Async(AT.Argon2id, password, salt, opts);
+/**
+ * Argon2d async GPU-resistant version.
+ * @param password - password or input key material
+ * @param salt - unique salt value
+ * @param opts - Argon2 cost and optional tuning parameters. See {@link ArgonOpts}.
+ * @returns Promise resolving to derived key bytes.
+ * @throws If the Argon2 input or cost parameters are invalid. {@link Error}
+ * @example
+ * Derive a key with Argon2d asynchronously.
+ * ```ts
+ * await argon2dAsync('password', 'salt1234', { t: 1, m: 8, p: 1, dkLen: 32 });
+ * ```
+ */
+export const argon2dAsync = (
+  password: KDFInput,
+  salt: KDFInput,
+  opts: ArgonOpts
+): Promise<Uint8Array> => argon2Async(AT.Argond2d, password, salt, opts);
+/**
+ * Argon2i async side-channel-resistant version.
+ * @param password - password or input key material
+ * @param salt - unique salt value
+ * @param opts - Argon2 cost and optional tuning parameters. See {@link ArgonOpts}.
+ * @returns Promise resolving to derived key bytes.
+ * @throws If the Argon2 input or cost parameters are invalid. {@link Error}
+ * @example
+ * Derive a key with Argon2i asynchronously.
+ * ```ts
+ * await argon2iAsync('password', 'salt1234', { t: 1, m: 8, p: 1, dkLen: 32 });
+ * ```
+ */
+export const argon2iAsync = (
+  password: KDFInput,
+  salt: KDFInput,
+  opts: ArgonOpts
+): Promise<Uint8Array> => argon2Async(AT.Argon2i, password, salt, opts);
+/**
+ * Argon2id async, combining i+d, the most popular version from RFC 9106.
+ * @param password - password or input key material
+ * @param salt - unique salt value
+ * @param opts - Argon2 cost and optional tuning parameters. See {@link ArgonOpts}.
+ * @returns Promise resolving to derived key bytes.
+ * @throws If the Argon2 input or cost parameters are invalid. {@link Error}
+ * @example
+ * Derive a key with Argon2id asynchronously.
+ * ```ts
+ * await argon2idAsync('password', 'salt1234', { t: 1, m: 8, p: 1, dkLen: 32 });
+ * ```
+ */
+export const argon2idAsync = (
+  password: KDFInput,
+  salt: KDFInput,
+  opts: ArgonOpts
+): Promise<Uint8Array> => argon2Async(AT.Argon2id, password, salt, opts);
