@@ -1,7 +1,7 @@
 name: Run slow TS tests
 on:
-  schedule:
-    - cron: '0 12 * * 1,4' # 06:00 bi-weekly (mon, thu)
+  #schedule:
+    #- cron: '0 12 * * 1,4' # 06:00 bi-weekly (mon, thu)
   workflow_dispatch:
 jobs:
   slow:
